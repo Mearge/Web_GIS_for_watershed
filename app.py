@@ -64,7 +64,8 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-DEM_PATH = "working_files_EPSG_3226/dem.tif"  # Default bundled DEM (WGS84)
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DEM_PATH = os.path.join(BASE_DIR, "working_files_EPSG_3226", "dem.tif")  # Default bundled DEM (WGS84)
 
 # --- 2. SIDEBAR CONTROLS ---
 st.sidebar.image("https://img.icons8.com/fluency/96/water.png", width=80)
@@ -689,6 +690,7 @@ with col3:
 
 # Resolve DEM path (uploaded or default)
 DEM_PATH = st.session_state.get('dem_path', DEM_PATH)
+st.sidebar.caption(f"Using DEM: {DEM_PATH}")
 
 # Load Data
 with st.spinner("🔄 Initializing Hydrological Model (Loading DEM... this may take 10s)..."):

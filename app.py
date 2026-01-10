@@ -511,6 +511,7 @@ def load_and_process_dem(path):
     # Create pysheds Grid manually from numpy array
     from pysheds.grid import Grid
     from pysheds.view import Raster, ViewFinder
+    import pyproj as proj_lib
     
     # Get grid parameters from transform
     cellsize = abs(dem_transform.a)  # pixel width
@@ -519,12 +520,18 @@ def load_and_process_dem(path):
     x_max = x_min + dem_data.shape[1] * cellsize
     y_min = y_max - dem_data.shape[0] * cellsize
     
+    # Create a valid pyproj CRS object (WGS84 always works)
+    try:
+        crs_for_pysheds = proj_lib.CRS.from_epsg(4326)
+    except:
+        crs_for_pysheds = proj_lib.Proj('EPSG:4326').crs
+    
     # Create viewfinder (defines the grid extent and shape)
     viewfinder = ViewFinder(shape=dem_data.shape,
                             mask=np.ones(dem_data.shape, dtype=bool),
                             nodata=np.nan,
                             affine=dem_transform,
-                            crs=None)  # No CRS to avoid pyproj issues
+                            crs=crs_for_pysheds)
     
     # Create the grid
     grid = Grid(viewfinder=viewfinder)

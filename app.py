@@ -88,6 +88,12 @@ basemap_dict = {
 st.sidebar.header("🎛️ Analysis Settings")
 snap_threshold = st.sidebar.slider("Snap Threshold (Accumulation)", 100, 5000, 500, 
                                    help="Minimum accumulation value to snap to stream")
+st.sidebar.caption("If your DEM or layers are UTM, set EPSG here (e.g., 32637)")
+st.session_state.global_source_crs = st.sidebar.text_input(
+    "Global Source CRS (EPSG)",
+    value=st.session_state.get('global_source_crs', ''),
+    help="Optional. If set, DEM and layers without CRS will be treated as this EPSG and reprojected to WGS84."
+)
 opacity = st.sidebar.slider("Layer Opacity", 0.0, 1.0, 0.6)
 
 st.sidebar.header("👁️ Display Layers")
@@ -512,7 +518,7 @@ def add_vector_layer_to_map(m, layer_name, layer_data):
     return m
 
 @st.cache_resource
-def load_and_process_dem(path):
+def load_and_process_dem(path, global_source_crs=None):
     """
     Loads DEM, fills pits (depressions), and calculates flow direction.
     Handles UTM and other projected coordinate systems by transforming to WGS84 for display.
@@ -524,6 +530,12 @@ def load_and_process_dem(path):
     # Get CRS information and data using rasterio FIRST
     with rasterio.open(path) as src:
         dem_crs = src.crs
+        # Override CRS if user provided a global source EPSG
+        if global_source_crs:
+            try:
+                dem_crs = rasterio.crs.CRS.from_user_input(global_source_crs)
+            except Exception as e:
+                st.warning(f"Global CRS override invalid: {e}. Using DEM CRS.")
         original_bounds = src.bounds  # left, bottom, right, top
         dem_transform = src.transform
         dem_data = src.read(1).astype(np.float64)
@@ -672,7 +684,10 @@ with col3:
 
 # Load Data
 with st.spinner("🔄 Initializing Hydrological Model (Loading DEM... this may take 10s)..."):
-    grid, dem, fdir, acc, stream_order, slope, bounds_wgs84, crs_info = load_and_process_dem(DEM_PATH)
+    grid, dem, fdir, acc, stream_order, slope, bounds_wgs84, crs_info = load_and_process_dem(
+        DEM_PATH,
+        st.session_state.get('global_source_crs')
+    )
 
 # Check if DEM exists
 if grid is None:

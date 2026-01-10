@@ -64,7 +64,7 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-DEM_PATH = "dem.tif"  # Ensure this file exists in the same folder
+DEM_PATH = "working_files_EPSG_3226/dem.tif"  # Default bundled DEM (WGS84)
 
 # --- 2. SIDEBAR CONTROLS ---
 st.sidebar.image("https://img.icons8.com/fluency/96/water.png", width=80)
@@ -571,8 +571,8 @@ def load_and_process_dem(path):
             dem_crs = rasterio.crs.CRS.from_epsg(4326)
             original_bounds = rasterio.transform.array_bounds(height, width, transform_wgs84)
             original_bounds = rasterio.coords.BoundingBox(*original_bounds)
-        except Exception as e:
-            st.warning(f"DEM reprojection to WGS84 failed, continuing with native CRS: {e}")
+        except Exception:
+            pass
     
     # Handle nodata
     if dem_nodata is not None:
@@ -630,8 +630,7 @@ def load_and_process_dem(path):
             transformer_to_utm = Transformer.from_crs('EPSG:4326', dem_crs, always_xy=True)
             transformer_to_wgs84 = Transformer.from_crs(dem_crs, 'EPSG:4326', always_xy=True)
             
-        except Exception as e:
-            st.warning(f"CRS transformation warning: {e}. Using original bounds.")
+        except Exception:
             bounds_wgs84 = {
                 'min_x': original_bounds.left,
                 'min_y': original_bounds.bottom,
@@ -697,7 +696,7 @@ with st.spinner("🔄 Initializing Hydrological Model (Loading DEM... this may t
 
 # Check if DEM exists
 if grid is None:
-    st.error(f"❌ File '{DEM_PATH}' not found! Please place a GeoTIFF named 'dem.tif' in this folder.")
+    st.error(f"❌ DEM not found. Please upload a GeoTIFF or place one at working_files_EPSG_3226/dem.tif.")
     st.stop()
 
 # Display DEM CRS info

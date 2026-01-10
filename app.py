@@ -528,6 +528,33 @@ def load_and_process_dem(path):
         dem_transform = src.transform
         dem_data = src.read(1).astype(np.float64)
         dem_nodata = src.nodata
+
+    # Reproject DEM to WGS84 to ensure correct placement when source is UTM/projected
+    if dem_crs is not None and dem_crs.to_string() != 'EPSG:4326':
+        try:
+            dst_crs = 'EPSG:4326'
+            transform_wgs84, width, height = rasterio.warp.calculate_default_transform(
+                dem_crs, dst_crs, dem_data.shape[1], dem_data.shape[0],
+                left=original_bounds.left, bottom=original_bounds.bottom,
+                right=original_bounds.right, top=original_bounds.top
+            )
+            dem_wgs84 = np.empty((height, width), dtype=np.float64)
+            rasterio.warp.reproject(
+                source=dem_data,
+                destination=dem_wgs84,
+                src_transform=dem_transform,
+                src_crs=dem_crs,
+                dst_transform=transform_wgs84,
+                dst_crs=dst_crs,
+                dst_nodata=np.nan
+            )
+            dem_data = dem_wgs84
+            dem_transform = transform_wgs84
+            dem_crs = rasterio.crs.CRS.from_epsg(4326)
+            original_bounds = rasterio.transform.array_bounds(height, width, transform_wgs84)
+            original_bounds = rasterio.coords.BoundingBox(*original_bounds)
+        except Exception as e:
+            st.warning(f"DEM reprojection to WGS84 failed, continuing with native CRS: {e}")
     
     # Handle nodata
     if dem_nodata is not None:
@@ -565,7 +592,7 @@ def load_and_process_dem(path):
     dem = Raster(dem_data, viewfinder=viewfinder)
     
     # Transform bounds to WGS84 if needed
-    if dem_crs is not None and dem_crs != 'EPSG:4326':
+    if dem_crs is not None and dem_crs.to_string() != 'EPSG:4326':
         try:
             # Transform bounds from source CRS to WGS84
             wgs84_bounds = transform_bounds(dem_crs, 'EPSG:4326', 

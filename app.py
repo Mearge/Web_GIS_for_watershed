@@ -88,12 +88,6 @@ basemap_dict = {
 st.sidebar.header("🎛️ Analysis Settings")
 snap_threshold = st.sidebar.slider("Snap Threshold (Accumulation)", 100, 5000, 500, 
                                    help="Minimum accumulation value to snap to stream")
-st.sidebar.caption("If your DEM or layers are UTM, set EPSG here (e.g., 32637)")
-st.session_state.global_source_crs = st.sidebar.text_input(
-    "Global Source CRS (EPSG)",
-    value=st.session_state.get('global_source_crs', ''),
-    help="Optional. If set, DEM and layers without CRS will be treated as this EPSG and reprojected to WGS84."
-)
 opacity = st.sidebar.slider("Layer Opacity", 0.0, 1.0, 0.6)
 
 st.sidebar.header("👁️ Display Layers")
@@ -170,6 +164,24 @@ uploaded_file = st.sidebar.file_uploader(
     type=['geojson', 'json', 'zip', 'gpkg', 'kml'],
     help="Supports GeoJSON, Shapefile (zipped), GeoPackage, KML. UTM and other projections are automatically converted to WGS84 for display."
 )
+
+# DEM uploader (GeoTIFF) — stored in session state and used as DEM_PATH
+dem_upload = st.sidebar.file_uploader(
+    "Upload DEM (GeoTIFF)",
+    type=['tif', 'tiff'],
+    help="Upload a DEM GeoTIFF in WGS84 (recommended)."
+)
+if dem_upload is not None:
+    try:
+        import tempfile
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.tif') as tmp_dem:
+            tmp_dem.write(dem_upload.getvalue())
+            st.session_state.dem_path = tmp_dem.name
+            DEM_PATH = st.session_state.dem_path
+        st.sidebar.success("✅ DEM uploaded and set. App will reload to use it.")
+        st.rerun()
+    except Exception as e:
+        st.sidebar.error(f"DEM upload failed: {e}")
 
 def process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg):
     """
@@ -518,7 +530,7 @@ def add_vector_layer_to_map(m, layer_name, layer_data):
     return m
 
 @st.cache_resource
-def load_and_process_dem(path, global_source_crs=None):
+def load_and_process_dem(path):
     """
     Loads DEM, fills pits (depressions), and calculates flow direction.
     Handles UTM and other projected coordinate systems by transforming to WGS84 for display.
@@ -530,12 +542,6 @@ def load_and_process_dem(path, global_source_crs=None):
     # Get CRS information and data using rasterio FIRST
     with rasterio.open(path) as src:
         dem_crs = src.crs
-        # Override CRS if user provided a global source EPSG
-        if global_source_crs:
-            try:
-                dem_crs = rasterio.crs.CRS.from_user_input(global_source_crs)
-            except Exception as e:
-                st.warning(f"Global CRS override invalid: {e}. Using DEM CRS.")
         original_bounds = src.bounds  # left, bottom, right, top
         dem_transform = src.transform
         dem_data = src.read(1).astype(np.float64)
@@ -682,12 +688,12 @@ with col2:
 with col3:
     st.markdown('<div class="info-box"><b>📊 Step 3:</b> View & export results</div>', unsafe_allow_html=True)
 
+# Resolve DEM path (uploaded or default)
+DEM_PATH = st.session_state.get('dem_path', DEM_PATH)
+
 # Load Data
 with st.spinner("🔄 Initializing Hydrological Model (Loading DEM... this may take 10s)..."):
-    grid, dem, fdir, acc, stream_order, slope, bounds_wgs84, crs_info = load_and_process_dem(
-        DEM_PATH,
-        st.session_state.get('global_source_crs')
-    )
+    grid, dem, fdir, acc, stream_order, slope, bounds_wgs84, crs_info = load_and_process_dem(DEM_PATH)
 
 # Check if DEM exists
 if grid is None:

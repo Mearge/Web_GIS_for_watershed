@@ -1,0 +1,1 @@
+How to run: cd "d:\Courses_and_related_info\Fourth semester\GIS QE\Watershed_app"; streamlit run app.py

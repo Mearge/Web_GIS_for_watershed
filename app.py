@@ -512,19 +512,18 @@ def load_and_process_dem(path):
         # If pysheds has CRS issues, create grid from the rasterio data
         st.warning(f"CRS handling fallback activated. Using alternative loading method.")
         
-        # Create a temporary file without problematic CRS
+        # Create a temporary file without ANY CRS
         import tempfile
         with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
             tmp_path = tmp.name
         
-        # Write data with a simple CRS (EPSG:4326 or no CRS)
+        # Write data WITHOUT CRS - pysheds will handle it
         with rasterio.open(tmp_path, 'w', 
                           driver='GTiff',
                           height=dem_data.shape[0],
                           width=dem_data.shape[1],
                           count=1,
                           dtype=dem_data.dtype,
-                          crs='EPSG:4326',  # Use simple WGS84
                           transform=dem_transform,
                           nodata=dem_nodata) as dst:
             dst.write(dem_data, 1)

@@ -26,7 +26,7 @@ from pyproj import Transformer
 # --- 1. CONFIGURATION ---
 st.set_page_config(
     layout="wide", 
-    page_title="MEARGE WebGIS Watershed Delineation System",
+    page_title="MEARGE WebGIS Watershed visualization System",
     page_icon="🌊",
     initial_sidebar_state="expanded"
 )
@@ -309,6 +309,31 @@ if st.session_state.vector_layers:
                 value=layer_data['visible'],
                 key=f"vis_{layer_name}"
             )
+
+            # CRS override (for UTM or unknown CRS uploads)
+            current_crs = layer_data.get('original_crs') or (str(layer_data['gdf'].crs) if layer_data['gdf'].crs else "")
+            new_crs_input = st.text_input(
+                "Layer CRS (EPSG, e.g., 32633)",
+                value=current_crs,
+                key=f"crs_input_{layer_name}"
+            )
+            if st.button("Apply CRS", key=f"apply_crs_{layer_name}"):
+                try:
+                    if new_crs_input:
+                        # Assign/convert to the provided CRS
+                        target_crs = pyproj.CRS.from_user_input(new_crs_input)
+                        gdf_raw = layer_data['gdf']
+                        if gdf_raw.crs is None:
+                            gdf_raw = gdf_raw.set_crs(target_crs)
+                        else:
+                            gdf_raw = gdf_raw.to_crs(target_crs)
+                        # Reproject to WGS84 for display
+                        gdf_wgs84 = gdf_raw.to_crs('EPSG:4326')
+                        layer_data['gdf'] = gdf_wgs84
+                        layer_data['original_crs'] = target_crs.to_string()
+                        st.success(f"CRS set to {target_crs.to_string()} and reprojected to WGS84")
+                except Exception as e:
+                    st.error(f"CRS apply failed: {e}")
             
             # Color picker
             layer_data['color'] = st.color_picker(
@@ -607,7 +632,7 @@ def load_and_process_dem(path):
     return grid, pit_filled_dem, fdir, acc, stream_order, slope, bounds_wgs84, crs_info
 
 # --- 4. MAIN APP LOGIC ---
-st.markdown('<div class="main-header"><h1>🌊 Professional WebGIS Watershed Delineation System</h1><p>Advanced Hydrological Analysis & Watershed Management Tool(dev:Mearg k)</p></div>', unsafe_allow_html=True)
+st.markdown('<div class="main-header"><h1>🌊 Professional WebGIS Watershed visualization System</h1><p>Advanced Hydrological Analysis & Watershed Management Tool(dev:Mearg k)</p></div>', unsafe_allow_html=True)
 
 # Info boxes
 col1, col2, col3 = st.columns(3)

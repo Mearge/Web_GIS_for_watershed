@@ -496,15 +496,48 @@ def load_and_process_dem(path):
     if not os.path.exists(path):
         return None, None, None, None, None, None, None, None
 
-    # Load grid and DEM using pysheds
-    grid = Grid.from_raster(path)
-    dem = grid.read_raster(path)
-    
-    # Get CRS information using rasterio
+    # Get CRS information and data using rasterio FIRST
     with rasterio.open(path) as src:
         dem_crs = src.crs
         original_bounds = src.bounds  # left, bottom, right, top
         dem_transform = src.transform
+        dem_data = src.read(1)
+        dem_nodata = src.nodata
+    
+    # Load grid using pysheds - with error handling for CRS issues
+    try:
+        grid = Grid.from_raster(path)
+        dem = grid.read_raster(path)
+    except Exception as crs_error:
+        # If pysheds has CRS issues, create grid from the rasterio data
+        st.warning(f"CRS handling fallback activated. Using alternative loading method.")
+        
+        # Create a temporary file without problematic CRS
+        import tempfile
+        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
+            tmp_path = tmp.name
+        
+        # Write data with a simple CRS (EPSG:4326 or no CRS)
+        with rasterio.open(tmp_path, 'w', 
+                          driver='GTiff',
+                          height=dem_data.shape[0],
+                          width=dem_data.shape[1],
+                          count=1,
+                          dtype=dem_data.dtype,
+                          crs='EPSG:4326',  # Use simple WGS84
+                          transform=dem_transform,
+                          nodata=dem_nodata) as dst:
+            dst.write(dem_data, 1)
+        
+        # Now load with pysheds from the temp file
+        grid = Grid.from_raster(tmp_path)
+        dem = grid.read_raster(tmp_path)
+        
+        # Clean up temp file
+        try:
+            os.unlink(tmp_path)
+        except:
+            pass
     
     # Transform bounds to WGS84 if needed
     if dem_crs is not None and dem_crs != 'EPSG:4326':

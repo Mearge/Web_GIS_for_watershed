@@ -501,42 +501,36 @@ def load_and_process_dem(path):
         dem_crs = src.crs
         original_bounds = src.bounds  # left, bottom, right, top
         dem_transform = src.transform
-        dem_data = src.read(1)
+        dem_data = src.read(1).astype(np.float64)
         dem_nodata = src.nodata
     
-    # Load grid using pysheds - with error handling for CRS issues
-    try:
-        grid = Grid.from_raster(path)
-        dem = grid.read_raster(path)
-    except Exception as crs_error:
-        # If pysheds has CRS issues, create grid from the rasterio data
-        st.warning(f"CRS handling fallback activated. Using alternative loading method.")
-        
-        # Create a temporary file without ANY CRS
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.tif', delete=False) as tmp:
-            tmp_path = tmp.name
-        
-        # Write data WITHOUT CRS - pysheds will handle it
-        with rasterio.open(tmp_path, 'w', 
-                          driver='GTiff',
-                          height=dem_data.shape[0],
-                          width=dem_data.shape[1],
-                          count=1,
-                          dtype=dem_data.dtype,
-                          transform=dem_transform,
-                          nodata=dem_nodata) as dst:
-            dst.write(dem_data, 1)
-        
-        # Now load with pysheds from the temp file
-        grid = Grid.from_raster(tmp_path)
-        dem = grid.read_raster(tmp_path)
-        
-        # Clean up temp file
-        try:
-            os.unlink(tmp_path)
-        except:
-            pass
+    # Handle nodata
+    if dem_nodata is not None:
+        dem_data[dem_data == dem_nodata] = np.nan
+    
+    # Create pysheds Grid manually from numpy array
+    from pysheds.grid import Grid
+    from pysheds.view import Raster, ViewFinder
+    
+    # Get grid parameters from transform
+    cellsize = abs(dem_transform.a)  # pixel width
+    x_min = dem_transform.c
+    y_max = dem_transform.f
+    x_max = x_min + dem_data.shape[1] * cellsize
+    y_min = y_max - dem_data.shape[0] * cellsize
+    
+    # Create viewfinder (defines the grid extent and shape)
+    viewfinder = ViewFinder(shape=dem_data.shape,
+                            mask=np.ones(dem_data.shape, dtype=bool),
+                            nodata=np.nan,
+                            affine=dem_transform,
+                            crs=None)  # No CRS to avoid pyproj issues
+    
+    # Create the grid
+    grid = Grid(viewfinder=viewfinder)
+    
+    # Create Raster from dem_data
+    dem = Raster(dem_data, viewfinder=viewfinder)
     
     # Transform bounds to WGS84 if needed
     if dem_crs is not None and dem_crs != 'EPSG:4326':

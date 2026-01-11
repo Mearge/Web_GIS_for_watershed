@@ -94,8 +94,10 @@ opacity = st.sidebar.slider("Layer Opacity", 0.0, 1.0, 0.6)
 st.sidebar.header("👁️ Display Layers")
 show_dem = st.sidebar.checkbox("DEM (Elevation)", value=False, help="Show elevation colors")
 show_hillshade = st.sidebar.checkbox("Hillshade", value=False, help="Terrain shading for 3D effect")
+show_dem_boundary = st.sidebar.checkbox("DEM Boundary", value=True, help="Show DEM extent as vector boundary")
 show_streams = st.sidebar.checkbox("Stream Network", value=True)
 show_stream_order = st.sidebar.checkbox("Stream Order (Strahler)", value=False, help="Color-coded stream hierarchy")
+show_stream_links = st.sidebar.checkbox("Stream Links", value=False, help="Unique stream reaches between confluences")
 show_flow_direction = st.sidebar.checkbox("Flow Direction", value=False, help="D8 flow direction arrows")
 show_accumulation = st.sidebar.checkbox("Flow Accumulation", value=False, help="Drainage area upstream")
 show_slope = st.sidebar.checkbox("Slope Analysis", value=False)
@@ -109,6 +111,10 @@ stream_threshold = st.sidebar.slider("Stream Visibility Threshold", 50, 1000, 20
 # Zoom to DEM button
 if st.sidebar.button("🔍 Zoom to DEM Extent"):
     st.session_state.zoom_to_bounds = 'dem'
+
+# Export DEM Boundary button
+if st.sidebar.button("📥 Export DEM Boundary"):
+    st.session_state.export_dem_boundary = True
 
 st.sidebar.header("🛠️ Tools")
 enable_measurement = st.sidebar.checkbox("Measurement Tools", value=True)
@@ -159,11 +165,12 @@ if selected_crs_option == "Custom EPSG...":
         help="Enter just the number, e.g., 32637 for UTM Zone 37N"
     )
 
-# File uploader for vector data
-uploaded_file = st.sidebar.file_uploader(
+# File uploader for vector data (multiple files allowed)
+uploaded_files = st.sidebar.file_uploader(
     "Upload Vector Data",
     type=['geojson', 'json', 'zip', 'gpkg', 'kml'],
-    help="Supports GeoJSON, Shapefile (zipped), GeoPackage, KML. UTM and other projections are automatically converted to WGS84 for display."
+    accept_multiple_files=True,
+    help="Supports GeoJSON, Shapefile (zipped), GeoPackage, KML. You can select multiple files. UTM and other projections are automatically converted to WGS84 for display."
 )
 
 # DEM uploader (GeoTIFF) — stored in session state and used as DEM_PATH
@@ -221,99 +228,108 @@ def process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg):
     
     return gdf, original_crs
 
-# Process uploaded vector file
-if uploaded_file is not None:
-    try:
-        file_name = uploaded_file.name
-        layer_name = os.path.splitext(file_name)[0]
-        
-        if file_name.endswith('.geojson') or file_name.endswith('.json'):
-            # Read GeoJSON
-            gdf = gpd.read_file(uploaded_file)
-            gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
-            if gdf_processed is not None:
+# Process uploaded vector files (multiple files supported)
+if uploaded_files:
+    for uploaded_file in uploaded_files:
+        try:
+            file_name = uploaded_file.name
+            layer_name = os.path.splitext(file_name)[0]
+            
+            # Skip if already loaded
+            if layer_name in st.session_state.vector_layers:
+                continue
+            
+            if file_name.endswith('.geojson') or file_name.endswith('.json'):
+                # Read GeoJSON
+                gdf = gpd.read_file(uploaded_file)
+                gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
+                if gdf_processed is not None:
+                    st.session_state.vector_layers[layer_name] = {
+                        'gdf': gdf_processed,
+                        'original_crs': str(original_crs) if original_crs else 'WGS84',
+                        'visible': True,
+                        'color': '#3388ff',
+                        'opacity': 0.7,
+                        'weight': 2
+                    }
+                    st.sidebar.success(f"✅ Loaded: {layer_name}")
+                
+            elif file_name.endswith('.zip'):
+                # Read zipped Shapefile
+                with tempfile.TemporaryDirectory() as tmpdir:
+                    with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
+                        zip_ref.extractall(tmpdir)
+                    # Find .shp file
+                    shp_files = [f for f in os.listdir(tmpdir) if f.endswith('.shp')]
+                    if shp_files:
+                        gdf = gpd.read_file(os.path.join(tmpdir, shp_files[0]))
+                        layer_name = os.path.splitext(shp_files[0])[0]
+                        
+                        # Skip if already loaded
+                        if layer_name in st.session_state.vector_layers:
+                            continue
+                        
+                        # Check for .prj file
+                        prj_files = [f for f in os.listdir(tmpdir) if f.endswith('.prj')]
+                        if not prj_files and gdf.crs is None:
+                            st.sidebar.warning(f"⚠️ No .prj file found for {layer_name}. CRS unknown.")
+                        
+                        gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
+                        if gdf_processed is not None:
+                            st.session_state.vector_layers[layer_name] = {
+                                'gdf': gdf_processed,
+                                'original_crs': str(original_crs) if original_crs else 'Unknown',
+                                'visible': True,
+                                'color': '#3388ff',
+                                'opacity': 0.7,
+                                'weight': 2
+                            }
+                            st.sidebar.success(f"✅ Loaded: {layer_name}")
+                    else:
+                        st.sidebar.error(f"No .shp file found in {file_name}")
+                        
+            elif file_name.endswith('.gpkg'):
+                # Read GeoPackage
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.gpkg') as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_path = tmp.name
+                gdf = gpd.read_file(tmp_path)
+                os.unlink(tmp_path)
+                gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
+                if gdf_processed is not None:
+                    st.session_state.vector_layers[layer_name] = {
+                        'gdf': gdf_processed,
+                        'original_crs': str(original_crs) if original_crs else 'WGS84',
+                        'visible': True,
+                        'color': '#3388ff',
+                        'opacity': 0.7,
+                        'weight': 2
+                    }
+                    st.sidebar.success(f"✅ Loaded: {layer_name}")
+                
+            elif file_name.endswith('.kml'):
+                # Read KML (KML is always WGS84)
+                gpd.io.file.fiona.drvsupport.supported_drivers['KML'] = 'rw'
+                with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
+                    tmp.write(uploaded_file.getvalue())
+                    tmp_path = tmp.name
+                gdf = gpd.read_file(tmp_path, driver='KML')
+                os.unlink(tmp_path)
+                # KML is always in WGS84
+                if gdf.crs is None:
+                    gdf = gdf.set_crs('EPSG:4326')
                 st.session_state.vector_layers[layer_name] = {
-                    'gdf': gdf_processed,
-                    'original_crs': str(original_crs) if original_crs else 'WGS84',
+                    'gdf': gdf,
+                    'original_crs': 'EPSG:4326 (KML)',
                     'visible': True,
                     'color': '#3388ff',
                     'opacity': 0.7,
                     'weight': 2
                 }
                 st.sidebar.success(f"✅ Loaded: {layer_name}")
-            
-        elif file_name.endswith('.zip'):
-            # Read zipped Shapefile
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with zipfile.ZipFile(uploaded_file, 'r') as zip_ref:
-                    zip_ref.extractall(tmpdir)
-                # Find .shp file
-                shp_files = [f for f in os.listdir(tmpdir) if f.endswith('.shp')]
-                if shp_files:
-                    gdf = gpd.read_file(os.path.join(tmpdir, shp_files[0]))
-                    layer_name = os.path.splitext(shp_files[0])[0]
-                    
-                    # Check for .prj file
-                    prj_files = [f for f in os.listdir(tmpdir) if f.endswith('.prj')]
-                    if not prj_files and gdf.crs is None:
-                        st.sidebar.warning(f"⚠️ No .prj file found. CRS unknown.")
-                    
-                    gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
-                    if gdf_processed is not None:
-                        st.session_state.vector_layers[layer_name] = {
-                            'gdf': gdf_processed,
-                            'original_crs': str(original_crs) if original_crs else 'Unknown',
-                            'visible': True,
-                            'color': '#3388ff',
-                            'opacity': 0.7,
-                            'weight': 2
-                        }
-                        st.sidebar.success(f"✅ Loaded: {layer_name}")
-                else:
-                    st.sidebar.error("No .shp file found in zip")
-                    
-        elif file_name.endswith('.gpkg'):
-            # Read GeoPackage
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.gpkg') as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-            gdf = gpd.read_file(tmp_path)
-            os.unlink(tmp_path)
-            gdf_processed, original_crs = process_gdf_crs(gdf, layer_name, selected_crs_option, custom_epsg)
-            if gdf_processed is not None:
-                st.session_state.vector_layers[layer_name] = {
-                    'gdf': gdf_processed,
-                    'original_crs': str(original_crs) if original_crs else 'WGS84',
-                    'visible': True,
-                    'color': '#3388ff',
-                    'opacity': 0.7,
-                    'weight': 2
-                }
-                st.sidebar.success(f"✅ Loaded: {layer_name}")
-            
-        elif file_name.endswith('.kml'):
-            # Read KML (KML is always WGS84)
-            gpd.io.file.fiona.drvsupport.supported_drivers['KML'] = 'rw'
-            with tempfile.NamedTemporaryFile(delete=False, suffix='.kml') as tmp:
-                tmp.write(uploaded_file.getvalue())
-                tmp_path = tmp.name
-            gdf = gpd.read_file(tmp_path, driver='KML')
-            os.unlink(tmp_path)
-            # KML is always in WGS84
-            if gdf.crs is None:
-                gdf = gdf.set_crs('EPSG:4326')
-            st.session_state.vector_layers[layer_name] = {
-                'gdf': gdf,
-                'original_crs': 'EPSG:4326 (KML)',
-                'visible': True,
-                'color': '#3388ff',
-                'opacity': 0.7,
-                'weight': 2
-            }
-            st.sidebar.success(f"✅ Loaded: {layer_name}")
-            
-    except Exception as e:
-        st.sidebar.error(f"Error loading file: {e}")
+                
+        except Exception as e:
+            st.sidebar.error(f"Error loading {file_name}: {e}")
 
 # Layer Management UI in sidebar
 if st.session_state.vector_layers:
@@ -722,6 +738,37 @@ st.subheader("🗺️ Interactive Map Viewer")
 bounds = [[bounds_wgs84['min_y'], bounds_wgs84['min_x']], 
           [bounds_wgs84['max_y'], bounds_wgs84['max_x']]]
 
+# Extract DEM boundary as vector polygon
+def extract_dem_boundary(dem_array, bounds_wgs84):
+    """Extract the valid data boundary of DEM as a polygon."""
+    from shapely.geometry import Polygon, MultiPolygon
+    from shapely.ops import unary_union
+    import rasterio.features
+    from affine import Affine
+    
+    # Create a mask of valid (non-NaN) data
+    valid_mask = (~np.isnan(dem_array)).astype(np.uint8)
+    
+    # Calculate transform from bounds
+    height, width = dem_array.shape
+    x_res = (bounds_wgs84['max_x'] - bounds_wgs84['min_x']) / width
+    y_res = (bounds_wgs84['max_y'] - bounds_wgs84['min_y']) / height
+    
+    transform = Affine.translation(bounds_wgs84['min_x'], bounds_wgs84['max_y']) * Affine.scale(x_res, -y_res)
+    
+    # Extract shapes from the mask
+    shapes = list(rasterio.features.shapes(valid_mask, mask=valid_mask == 1, transform=transform))
+    
+    if shapes:
+        # Convert to shapely polygons and merge
+        polygons = [shape(geom) for geom, val in shapes if val == 1]
+        if polygons:
+            boundary = unary_union(polygons)
+            # Simplify to reduce vertices (tolerance in degrees)
+            boundary = boundary.simplify(0.0005, preserve_topology=True)
+            return boundary
+    return None
+
 # Create the Base Map with selected basemap
 if basemap_option == "OpenStreetMap":
     m = folium.Map(location=[center_lat, center_lon], zoom_start=12, tiles="OpenStreetMap")
@@ -760,59 +807,96 @@ def create_hillshade(elevation, azimuth=315, altitude=45):
              np.cos(azimuth_rad - aspect_rad)
     return np.clip(shaded, 0, 1)
 
+def create_multidirectional_hillshade(elevation, azimuths=(45, 90, 135, 225, 270, 315), altitude=45):
+    """Blend multiple hillshades to reduce striping and improve relief."""
+    shades = [create_hillshade(elevation, az, altitude) for az in azimuths]
+    return np.clip(np.mean(shades, axis=0), 0, 1)
+
 # Convert all raster data to numpy arrays
 dem_arr = to_numpy_array(dem)
 acc_arr = to_numpy_array(acc)
 fdir_arr = to_numpy_array(fdir)
-stream_order_arr = to_numpy_array(stream_order)
 slope_arr = to_numpy_array(slope)
+
+# Extract DEM boundary as vector
+dem_boundary_geom = extract_dem_boundary(dem_arr, bounds_wgs84)
+
+# Store in session state for export
+if dem_boundary_geom is not None:
+    st.session_state['dem_boundary'] = dem_boundary_geom
+
+# Dynamic stream mask driven by UI threshold
+stream_threshold_effective = max(stream_threshold, 1)
+stream_mask_for_order = acc_arr > stream_threshold_effective
+
+# Compute stream order and links dynamically so the slider affects both
+try:
+    stream_order_arr = to_numpy_array(grid.stream_order(fdir, stream_mask_for_order))
+except Exception:
+    stream_order_arr = np.zeros_like(acc_arr)
+
+try:
+    stream_link_arr = to_numpy_array(grid.stream_link(fdir, stream_mask_for_order))
+except Exception:
+    stream_link_arr = None
 
 # Debug info in expander
 with st.expander("🔍 Debug: Raster Statistics", expanded=False):
     st.write(f"**DEM:** min={np.nanmin(dem_arr):.1f}, max={np.nanmax(dem_arr):.1f}, shape={dem_arr.shape}")
     st.write(f"**Flow Accumulation:** min={np.nanmin(acc_arr):.0f}, max={np.nanmax(acc_arr):.0f}")
     st.write(f"**Stream Order:** min={np.nanmin(stream_order_arr[stream_order_arr > 0]) if np.any(stream_order_arr > 0) else 0}, max={np.nanmax(stream_order_arr):.0f}")
+    st.write(f"**Stream Links:** {int(np.nanmax(stream_link_arr)) if stream_link_arr is not None else 'n/a'} ids")
     st.write(f"**Slope:** min={np.nanmin(slope_arr):.1f}°, max={np.nanmax(slope_arr):.1f}°")
     st.write(f"**Bounds (WGS84):** {bounds}")
 
 # Add DEM (Elevation) Layer
 if show_dem:
-    # Set visualization thresholds (max 3000m)
-    MAX_ELEVATION = 3000.0
+    # Dynamically set elevation range based on actual data
     dem_min = np.nanmin(dem_arr)
     dem_max_raw = np.nanmax(dem_arr)
-    dem_max = min(dem_max_raw, MAX_ELEVATION)  # Cap at 3000m
     
-    st.sidebar.caption(f"DEM Range: {dem_min:.0f}m - {dem_max_raw:.0f}m (capped at {MAX_ELEVATION:.0f}m)")
+    # Use 2nd and 98th percentile to handle outliers
+    dem_p2 = np.nanpercentile(dem_arr, 2)
+    dem_p98 = np.nanpercentile(dem_arr, 98)
     
-    # Clip DEM values to threshold and normalize
-    dem_clipped = np.clip(dem_arr, dem_min, MAX_ELEVATION)
-    dem_range = dem_max - dem_min
+    st.sidebar.caption(f"DEM Range: {dem_min:.0f}m - {dem_max_raw:.0f}m")
+    
+    # Clip DEM values to percentile range for better visualization
+    dem_clipped = np.clip(dem_arr, dem_p2, dem_p98)
+    dem_range = dem_p98 - dem_p2
     
     if dem_range > 0:
-        dem_norm = (dem_clipped - dem_min) / dem_range
+        dem_norm = (dem_clipped - dem_p2) / dem_range
     else:
         dem_norm = np.zeros_like(dem_arr)
     
     # Use matplotlib colormap for proper terrain colors (vectorized - much faster)
     from matplotlib.colors import LinearSegmentedColormap
     
-    # Define terrain colormap: green -> yellow -> brown -> white
+    # Enhanced hypsometric terrain colormap: deep valleys -> peaks
     terrain_colors = [
-        (0.0, '#1a472a'),   # Dark green (low)
-        (0.15, '#2d6a4f'),  # Forest green
-        (0.3, '#52b788'),   # Light green
-        (0.45, '#b7e4c7'),  # Pale green
-        (0.55, '#f4e285'),  # Yellow
-        (0.7, '#dda15e'),   # Tan/orange
-        (0.85, '#bc6c25'),  # Brown
-        (1.0, '#ffffff')    # White (high)
+        (0.00, '#0d3b2e'),   # Deep dark green (valley floor)
+        (0.08, '#1a5f45'),   # Dark forest green
+        (0.16, '#2d7a5e'),   # Forest green
+        (0.24, '#40916c'),   # Medium green
+        (0.32, '#52b788'),   # Light green
+        (0.40, '#74c69d'),   # Pale green
+        (0.48, '#95d5b2'),   # Very pale green
+        (0.54, '#d8f3dc'),   # Light mint
+        (0.60, '#f7f7c9'),   # Pale yellow
+        (0.66, '#f4e285'),   # Yellow
+        (0.72, '#e9c46a'),   # Gold
+        (0.78, '#dda15e'),   # Tan/orange
+        (0.84, '#bc6c25'),   # Brown
+        (0.90, '#9b5523'),   # Dark brown
+        (0.95, '#d4c4b5'),   # Light gray-brown (rock)
+        (1.00, '#ffffff')    # White (snow/peaks)
     ]
     
     # Create colormap
     colors_list = [c[1] for c in terrain_colors]
     positions = [c[0] for c in terrain_colors]
-    cmap_terrain = LinearSegmentedColormap.from_list('terrain_custom', list(zip(positions, colors_list)))
+    cmap_terrain = LinearSegmentedColormap.from_list('terrain_hypsometric', list(zip(positions, colors_list)))
     
     # Apply colormap (returns RGBA)
     dem_colored = cmap_terrain(dem_norm)
@@ -830,16 +914,18 @@ if show_dem:
         name="⛰️ DEM Elevation"
     ).add_to(m)
     
-    # Add elevation legend
+    # Enhanced elevation legend with better gradient
     legend_html = f'''
-    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: white;
-                padding: 10px; border-radius: 5px; border: 2px solid #333; font-family: Arial; font-size: 12px;">
-        <b>⛰️ Elevation</b><br>
-        <div style="display: flex; align-items: center; margin-top: 5px;">
-            <div style="width: 150px; height: 20px; background: linear-gradient(to right, #1a472a, #2d6a4f, #52b788, #f4e285, #dda15e, #bc6c25, #ffffff);"></div>
+    <div style="position: fixed; bottom: 50px; left: 50px; z-index: 1000; background-color: rgba(255,255,255,0.95);
+                padding: 12px 15px; border-radius: 8px; border: 2px solid #1e3c72; font-family: 'Segoe UI', Arial, sans-serif; 
+                font-size: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+        <b style="color: #1e3c72; font-size: 13px;">⛰️ Elevation (m)</b><br>
+        <div style="display: flex; align-items: center; margin-top: 8px;">
+            <div style="width: 180px; height: 22px; border-radius: 3px; border: 1px solid #ccc;
+                background: linear-gradient(to right, #0d3b2e, #1a5f45, #40916c, #74c69d, #d8f3dc, #f4e285, #dda15e, #bc6c25, #d4c4b5, #ffffff);"></div>
         </div>
-        <div style="display: flex; justify-content: space-between; width: 150px; font-size: 10px;">
-            <span>{dem_min:.0f}m</span><span>{(dem_min+dem_max)/2:.0f}m</span><span>{dem_max:.0f}m</span>
+        <div style="display: flex; justify-content: space-between; width: 180px; font-size: 10px; margin-top: 4px; color: #555;">
+            <span>{dem_p2:.0f}</span><span>{(dem_p2+dem_p98)/2:.0f}</span><span>{dem_p98:.0f}</span>
         </div>
     </div>
     '''
@@ -847,46 +933,81 @@ if show_dem:
 
 # Add Hillshade Layer
 if show_hillshade:
-    hillshade = create_hillshade(dem_arr)
+    # Create hillshade with NaN handling
+    dem_for_hillshade = dem_arr.copy()
+    # Replace NaN with mean for gradient calculation
+    dem_mean = np.nanmean(dem_for_hillshade)
+    dem_for_hillshade = np.where(np.isnan(dem_for_hillshade), dem_mean, dem_for_hillshade)
+    
+    # Calculate gradients
+    dy, dx = np.gradient(dem_for_hillshade)
+    
+    # Hillshade parameters
+    azimuth = 315  # Light from northwest
+    altitude = 45  # Sun angle
+    azimuth_rad = np.radians(360 - azimuth + 90)  # Convert to math convention
+    altitude_rad = np.radians(altitude)
+    
+    # Calculate slope and aspect
+    slope_rad = np.arctan(np.sqrt(dx*dx + dy*dy))
+    aspect_rad = np.arctan2(dy, -dx)
+    
+    # Calculate hillshade
+    hillshade = (np.cos(altitude_rad) * np.cos(slope_rad) + 
+                 np.sin(altitude_rad) * np.sin(slope_rad) * np.cos(azimuth_rad - aspect_rad))
+    
+    # Normalize to 0-1 and brighten
+    hillshade = np.clip(hillshade, -1, 1)
+    hillshade = (hillshade + 1) / 2  # Now 0 to 1
+    
+    # Apply gamma correction to brighten shadows
+    gamma = 0.7  # Less than 1 brightens dark areas
+    hillshade = np.power(hillshade, gamma)
+    
+    # Create RGBA with warm gray tones
     hillshade_colored = np.zeros((*hillshade.shape, 4), dtype=np.float32)
-    hillshade_colored[:,:,0] = hillshade
-    hillshade_colored[:,:,1] = hillshade
-    hillshade_colored[:,:,2] = hillshade
-    hillshade_colored[:,:,3] = np.where(np.isnan(dem_arr), 0, 0.7)
+    hillshade_colored[:, :, 0] = np.float32(hillshade)        # R
+    hillshade_colored[:, :, 1] = np.float32(hillshade * 0.97) # G
+    hillshade_colored[:, :, 2] = np.float32(hillshade * 0.92) # B (warm tint)
+    hillshade_colored[:, :, 3] = np.where(np.isnan(dem_arr), 0.0, 0.7).astype(np.float32)
     
     folium.raster_layers.ImageOverlay(
         image=hillshade_colored,
         bounds=bounds,
-        opacity=0.8,
+        opacity=1.0,
         name="🌄 Hillshade"
     ).add_to(m)
 
 # Add Stream Network Layer
 if show_streams:
-    # Create stream mask based on threshold - use lower threshold for visibility
+    # Create stream mask based on threshold
     effective_threshold = max(stream_threshold, 50)  # At least 50
     stream_mask = acc_arr > effective_threshold
     
-    st.sidebar.caption(f"Streams visible: {np.sum(stream_mask):,} cells")
+    stream_count = np.sum(stream_mask)
+    st.sidebar.caption(f"Streams visible: {stream_count:,} cells")
     
-    if np.any(stream_mask):
+    if stream_count > 0:
         # Logarithmic scaling for better visualization
         acc_log = np.log10(np.maximum(acc_arr, 1))
-        acc_max_log = np.log10(np.nanmax(acc_arr) + 1)
+        acc_threshold_log = np.log10(max(effective_threshold, 1))
+        acc_max_log = np.log10(max(np.nanmax(acc_arr), 1) + 1)
         
-        if acc_max_log > 0:
-            acc_norm = np.clip(acc_log / acc_max_log, 0, 1)
+        # Normalize accumulation values
+        if acc_max_log > acc_threshold_log:
+            acc_norm = (acc_log - acc_threshold_log) / (acc_max_log - acc_threshold_log)
+            acc_norm = np.clip(acc_norm, 0, 1)
         else:
             acc_norm = np.zeros_like(acc_arr)
         
-        # Create BRIGHT BLUE stream network
+        # Create stream colored array - BRIGHT BLUE streams
         stream_colored = np.zeros((*acc_arr.shape, 4), dtype=np.float32)
         
-        # Only color where streams exist
-        stream_colored[:,:,0] = 0.0                    # R = 0
-        stream_colored[:,:,1] = 0.3 * acc_norm         # G - slight green tint
-        stream_colored[:,:,2] = 1.0                    # B = full blue
-        stream_colored[:,:,3] = np.where(stream_mask, 1.0, 0.0)  # Full opacity where streams exist
+        # Apply colors only where streams exist
+        stream_colored[:, :, 0] = 0.0                                    # R = 0
+        stream_colored[:, :, 1] = np.where(stream_mask, 0.4, 0.0)        # G = 0.4 for cyan tint
+        stream_colored[:, :, 2] = np.where(stream_mask, 1.0, 0.0)        # B = 1.0 (blue)
+        stream_colored[:, :, 3] = np.where(stream_mask, 0.9, 0.0)        # Alpha = 0.9 where streams
         
         folium.raster_layers.ImageOverlay(
             image=stream_colored,
@@ -894,6 +1015,18 @@ if show_streams:
             opacity=1.0,
             name="🌊 Stream Network"
         ).add_to(m)
+        
+        # Add stream network legend
+        stream_legend = '''
+        <div style="position: fixed; bottom: 50px; right: 220px; z-index: 1000; background-color: rgba(255,255,255,0.95);
+                    padding: 10px 12px; border-radius: 8px; border: 2px solid #0066CC; font-family: Arial; font-size: 11px;">
+            <b style="color: #0066CC;">🌊 Stream Network</b><br>
+            <div style="margin-top: 6px;">
+                <span style="display:inline-block;width:40px;height:6px;background:#0066FF;border-radius:2px;"></span> Streams<br>
+            </div>
+        </div>
+        '''
+        m.get_root().html.add_child(folium.Element(stream_legend))
     else:
         st.sidebar.warning("No streams found with current threshold")
 
@@ -904,27 +1037,31 @@ if show_stream_order:
     if len(valid_orders) > 0:
         max_order = int(np.nanmax(stream_order_arr))
         
-        # Distinct colors for each stream order
+        # Professional color scheme for stream orders
+        # Uses a perceptually distinct palette (ColorBrewer-inspired)
         order_colors = {
-            1: [0.5, 0.8, 1.0],    # Light cyan
-            2: [0.2, 0.6, 1.0],    # Light blue
-            3: [0.0, 0.4, 1.0],    # Blue
-            4: [0.0, 0.2, 0.8],    # Dark blue
-            5: [0.4, 0.0, 0.8],    # Purple
-            6: [0.8, 0.0, 0.6],    # Magenta
-            7: [1.0, 0.0, 0.0],    # Red
+            1: [0.60, 0.85, 0.92],    # Light sky blue (headwaters)
+            2: [0.40, 0.76, 0.85],    # Sky blue
+            3: [0.20, 0.63, 0.79],    # Medium blue
+            4: [0.08, 0.50, 0.72],    # Steel blue
+            5: [0.03, 0.38, 0.60],    # Dark blue
+            6: [0.45, 0.15, 0.60],    # Purple
+            7: [0.65, 0.10, 0.45],    # Magenta-purple
+            8: [0.80, 0.05, 0.25],    # Crimson
+            9: [0.90, 0.00, 0.10],    # Deep red
         }
         
         order_colored = np.zeros((*stream_order_arr.shape, 4), dtype=np.float32)
         
         for order_val in range(1, max_order + 1):
             mask = stream_order_arr == order_val
-            color_key = min(order_val, 7)
-            color = order_colors.get(color_key, [1.0, 0.0, 0.0])
+            color_key = min(order_val, 9)
+            color = order_colors.get(color_key, [0.90, 0.00, 0.10])
             order_colored[mask, 0] = color[0]
             order_colored[mask, 1] = color[1]
             order_colored[mask, 2] = color[2]
-            order_colored[mask, 3] = 0.9
+            # Higher orders get higher alpha for visual hierarchy
+            order_colored[mask, 3] = min(0.7 + order_val * 0.04, 1.0)
         
         # Transparent where no streams
         order_colored[stream_order_arr <= 0, 3] = 0
@@ -936,23 +1073,99 @@ if show_stream_order:
             name="📊 Stream Order"
         ).add_to(m)
         
-        # Legend
-        order_legend = '''
-        <div style="position: fixed; bottom: 50px; right: 50px; z-index: 1000; background-color: white;
-                    padding: 10px; border-radius: 5px; border: 2px solid #333; font-family: Arial; font-size: 11px;">
-            <b>📊 Stream Order</b><br>
-            <div style="margin-top: 5px;">
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(128,204,255);border:1px solid #333;"></span> 1 - Headwater<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(51,153,255);border:1px solid #333;"></span> 2<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(0,102,255);border:1px solid #333;"></span> 3<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(0,51,204);border:1px solid #333;"></span> 4<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(102,0,204);border:1px solid #333;"></span> 5<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(204,0,153);border:1px solid #333;"></span> 6<br>
-                <span style="display:inline-block;width:20px;height:12px;background:rgb(255,0,0);border:1px solid #333;"></span> 7+ - Main River<br>
+        # Enhanced legend with Strahler classification
+        order_legend = f'''
+        <div style="position: fixed; bottom: 50px; right: 50px; z-index: 1000; background-color: rgba(255,255,255,0.95);
+                    padding: 12px 15px; border-radius: 8px; border: 2px solid #0c5073; font-family: 'Segoe UI', Arial, sans-serif;
+                    font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            <b style="color: #0c5073; font-size: 13px;">📊 Strahler Stream Order</b><br>
+            <div style="margin-top: 8px; line-height: 1.6;">
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:3px;background:rgb(153,217,234);border-radius:1px;"></span>
+                    <span style="margin-left:8px;">1 - Headwater</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:4px;background:rgb(102,194,217);border-radius:1px;"></span>
+                    <span style="margin-left:8px;">2</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:5px;background:rgb(51,161,201);border-radius:1px;"></span>
+                    <span style="margin-left:8px;">3</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:6px;background:rgb(20,128,184);border-radius:1px;"></span>
+                    <span style="margin-left:8px;">4</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:7px;background:rgb(8,97,153);border-radius:2px;"></span>
+                    <span style="margin-left:8px;">5</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:8px;background:rgb(115,38,153);border-radius:2px;"></span>
+                    <span style="margin-left:8px;">6+</span>
+                </div>
+                <div style="display: flex; align-items: center;">
+                    <span style="display:inline-block;width:28px;height:10px;background:rgb(230,13,64);border-radius:2px;"></span>
+                    <span style="margin-left:8px;">7+ Main River</span>
+                </div>
+            </div>
+            <div style="font-size: 9px; color: #888; margin-top: 8px; border-top: 1px solid #ddd; padding-top: 6px;">
+                Max order: {max_order}
             </div>
         </div>
         '''
         m.get_root().html.add_child(folium.Element(order_legend))
+
+# Add Stream Links Layer (unique reaches between confluences)
+# Stream Links are calculated by pysheds grid.stream_link() function:
+# - Each unique stream segment between confluences (junction points) gets a unique ID
+# - A confluence is where two or more streams meet
+# - The algorithm traces flow direction and assigns new IDs at each junction
+if show_stream_links:
+    if stream_link_arr is not None:
+        link_mask = stream_link_arr > 0
+        link_count = np.sum(link_mask)
+        
+        if link_count > 0:
+            # Color palette for different links
+            link_palette = np.array([
+                [31, 119, 180], [255, 127, 14], [44, 160, 44], [214, 39, 40],
+                [148, 103, 189], [140, 86, 75], [227, 119, 194], [127, 127, 127],
+                [188, 189, 34], [23, 190, 207]
+            ], dtype=np.float32) / 255.0
+            
+            # Create colored array
+            link_colored = np.zeros((*stream_link_arr.shape, 4), dtype=np.float32)
+            
+            # Assign colors based on link ID modulo palette size
+            link_ids = stream_link_arr[link_mask].astype(np.int64)
+            color_indices = np.mod(link_ids, len(link_palette))
+            
+            link_colored[link_mask, 0] = link_palette[color_indices, 0]
+            link_colored[link_mask, 1] = link_palette[color_indices, 1]
+            link_colored[link_mask, 2] = link_palette[color_indices, 2]
+            link_colored[link_mask, 3] = 0.9
+            
+            folium.raster_layers.ImageOverlay(
+                image=link_colored,
+                bounds=bounds,
+                opacity=1.0,
+                name="🔗 Stream Links"
+            ).add_to(m)
+            
+            num_links = int(np.nanmax(stream_link_arr))
+            links_legend = f'''
+            <div style="position: fixed; bottom: 95px; right: 50px; z-index: 1000; background-color: white;
+                        padding: 10px; border-radius: 5px; border: 2px solid #333; font-family: Arial; font-size: 11px;">
+                <b>🔗 Stream Links</b><br>
+                <span style="font-size: 10px;">Unique segments between<br>confluences: {num_links} links</span>
+            </div>
+            '''
+            m.get_root().html.add_child(folium.Element(links_legend))
+        else:
+            st.sidebar.warning("No stream links found with current threshold")
+    else:
+        st.sidebar.warning("Stream links could not be calculated")
 
 # Add Flow Direction Layer
 if show_flow_direction:
@@ -1010,26 +1223,32 @@ if show_flow_direction:
 # Add Flow Accumulation Layer
 if show_accumulation:
     # Use log scale for better visualization
-    acc_log = np.where(acc_arr > 1, np.log10(acc_arr), 0)
+    acc_positive = np.maximum(acc_arr, 1)
+    acc_log = np.log10(acc_positive)
     acc_max_log = np.nanmax(acc_log)
+    acc_min_log = np.nanmin(acc_log[acc_arr > 0]) if np.any(acc_arr > 0) else 0
     
-    if acc_max_log > 0:
-        acc_norm = acc_log / acc_max_log
+    if acc_max_log > acc_min_log:
+        acc_norm = (acc_log - acc_min_log) / (acc_max_log - acc_min_log)
+        acc_norm = np.clip(acc_norm, 0, 1)
     else:
         acc_norm = np.zeros_like(acc_log)
     
-    # Yellow -> Orange -> Red -> Dark Red colormap
+    # Create colored array: Yellow -> Orange -> Red -> Dark Red
     acc_colored = np.zeros((*acc_arr.shape, 4), dtype=np.float32)
     
-    # Apply color gradient
-    acc_colored[:,:,0] = np.clip(1.0, 0, 1)  # R stays high
-    acc_colored[:,:,1] = np.clip(1.0 - acc_norm * 1.2, 0, 1)  # G decreases
-    acc_colored[:,:,2] = np.clip(0.2 - acc_norm * 0.2, 0, 1)  # B low
+    # Simple gradient: high R, decreasing G, low B
+    acc_colored[:, :, 0] = 1.0                                           # R = 1.0
+    acc_colored[:, :, 1] = np.float32(1.0 - acc_norm * 0.9)              # G: 1.0 -> 0.1
+    acc_colored[:, :, 2] = np.float32(0.2 - acc_norm * 0.2)              # B: 0.2 -> 0.0
     
-    # Alpha based on accumulation (low acc = transparent)
-    acc_colored[:,:,3] = np.where(acc_arr > 10, 
-                                   np.clip(0.2 + acc_norm * 0.8, 0, 1), 
-                                   0)
+    # Alpha: only show where accumulation > threshold, stronger for higher values
+    min_acc_display = 10  # Minimum accumulation to display
+    acc_colored[:, :, 3] = np.where(
+        acc_arr > min_acc_display,
+        np.float32(0.3 + 0.6 * acc_norm),  # Alpha 0.3 to 0.9
+        0.0
+    )
     
     folium.raster_layers.ImageOverlay(
         image=acc_colored,
@@ -1041,13 +1260,14 @@ if show_accumulation:
     # Legend
     max_acc_val = int(np.nanmax(acc_arr))
     acc_legend = f'''
-    <div style="position: fixed; bottom: 130px; left: 50px; z-index: 1000; background-color: white;
-                padding: 10px; border-radius: 5px; border: 2px solid #333; font-family: Arial; font-size: 12px;">
-        <b>💧 Flow Accumulation</b><br>
-        <div style="display: flex; align-items: center; margin-top: 5px;">
-            <div style="width: 150px; height: 20px; background: linear-gradient(to right, #ffff66, #ffcc00, #ff6600, #cc0000, #660000);"></div>
+    <div style="position: fixed; bottom: 130px; left: 50px; z-index: 1000; background-color: rgba(255,255,255,0.95);
+                padding: 12px 15px; border-radius: 8px; border: 2px solid #cc0000; font-family: Arial; font-size: 12px;">
+        <b style="color: #cc0000;">💧 Flow Accumulation</b><br>
+        <div style="display: flex; align-items: center; margin-top: 8px;">
+            <div style="width: 150px; height: 20px; border-radius: 3px; border: 1px solid #ccc;
+                background: linear-gradient(to right, #ffff33, #ffcc00, #ff6600, #cc0000, #660000);"></div>
         </div>
-        <div style="display: flex; justify-content: space-between; width: 150px; font-size: 10px;">
+        <div style="display: flex; justify-content: space-between; width: 150px; font-size: 10px; margin-top: 4px;">
             <span>Low</span><span>High ({max_acc_val:,})</span>
         </div>
     </div>
@@ -1056,6 +1276,8 @@ if show_accumulation:
 
 # Add Slope Layer
 if show_slope:
+    from matplotlib.colors import LinearSegmentedColormap
+    
     slope_abs = np.abs(slope_arr)
     slope_max = np.nanmax(slope_abs)
     slope_clipped = np.clip(slope_abs, 0, 60)  # Clip to 60 degrees
@@ -1065,16 +1287,31 @@ if show_slope:
     else:
         slope_norm = np.zeros_like(slope_arr)
     
-    # Green (flat) -> Yellow -> Orange -> Red (steep) colormap
-    slope_colored = np.zeros((*slope_arr.shape, 4), dtype=np.float32)
+    # Professional slope classification colormap
+    # Based on standard geomorphological slope classes
+    slope_colors = [
+        (0.00, '#1a9850'),    # 0° - Flat (dark green)
+        (0.05, '#66bd63'),    # 3° - Nearly level (green)
+        (0.10, '#a6d96a'),    # 6° - Gentle (light green)
+        (0.17, '#d9ef8b'),    # 10° - Moderate (yellow-green)
+        (0.25, '#fee08b'),    # 15° - Moderately steep (yellow)
+        (0.33, '#fdae61'),    # 20° - Steep (orange)
+        (0.42, '#f46d43'),    # 25° - Very steep (red-orange)
+        (0.58, '#d73027'),    # 35° - Extremely steep (red)
+        (0.75, '#a50026'),    # 45° - Precipitous (dark red)
+        (1.00, '#67001f')     # 60°+ - Cliff (very dark red)
+    ]
     
-    # Color gradient: green -> yellow -> red
-    slope_colored[:,:,0] = np.clip(slope_norm * 2, 0, 1)  # R increases
-    slope_colored[:,:,1] = np.clip(1.0 - slope_norm, 0, 1)  # G decreases from 1
-    slope_colored[:,:,2] = 0.1  # B stays low
+    colors_list = [c[1] for c in slope_colors]
+    positions = [c[0] for c in slope_colors]
+    cmap_slope = LinearSegmentedColormap.from_list('slope_class', list(zip(positions, colors_list)))
+    
+    # Apply colormap
+    slope_colored = cmap_slope(slope_norm)
+    slope_colored = slope_colored.astype(np.float32)
     
     # Full opacity except NaN
-    slope_colored[:,:,3] = np.where(np.isnan(slope_arr), 0, 0.7)
+    slope_colored[:,:,3] = np.where(np.isnan(slope_arr), 0, 0.75)
     
     folium.raster_layers.ImageOverlay(
         image=slope_colored,
@@ -1083,16 +1320,24 @@ if show_slope:
         name="📐 Slope"
     ).add_to(m)
     
-    # Legend
+    # Enhanced slope legend with class labels
     slope_legend = f'''
-    <div style="position: fixed; bottom: 210px; left: 50px; z-index: 1000; background-color: white;
-                padding: 10px; border-radius: 5px; border: 2px solid #333; font-family: Arial; font-size: 12px;">
-        <b>📐 Slope (degrees)</b><br>
-        <div style="display: flex; align-items: center; margin-top: 5px;">
-            <div style="width: 150px; height: 20px; background: linear-gradient(to right, #00cc00, #66cc00, #cccc00, #ff9900, #ff0000);"></div>
+    <div style="position: fixed; bottom: 210px; left: 50px; z-index: 1000; background-color: rgba(255,255,255,0.95);
+                padding: 12px 15px; border-radius: 8px; border: 2px solid #d73027; font-family: 'Segoe UI', Arial, sans-serif; 
+                font-size: 11px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+        <b style="color: #d73027; font-size: 13px;">📐 Slope Analysis</b><br>
+        <div style="display: flex; align-items: center; margin-top: 8px;">
+            <div style="width: 180px; height: 22px; border-radius: 3px; border: 1px solid #ccc;
+                background: linear-gradient(to right, #1a9850, #66bd63, #d9ef8b, #fee08b, #fdae61, #d73027, #67001f);"></div>
         </div>
-        <div style="display: flex; justify-content: space-between; width: 150px; font-size: 10px;">
-            <span>0° Flat</span><span>30°</span><span>60°+ Steep</span>
+        <div style="display: flex; justify-content: space-between; width: 180px; font-size: 9px; margin-top: 4px; color: #555;">
+            <span>0°</span><span>15°</span><span>30°</span><span>45°</span><span>60°+</span>
+        </div>
+        <div style="margin-top: 6px; font-size: 9px; color: #666; line-height: 1.4;">
+            <span style="color:#1a9850;">●</span> Flat &nbsp;
+            <span style="color:#a6d96a;">●</span> Gentle &nbsp;
+            <span style="color:#fdae61;">●</span> Steep &nbsp;
+            <span style="color:#a50026;">●</span> Cliff
         </div>
     </div>
     '''
@@ -1166,6 +1411,20 @@ if st.session_state.get('watershed_polygons') and len(st.session_state.watershed
         ws_geom = ws_data['geometry']
         ws_json = mapping(ws_geom)
         
+        # Build popup content with all available metrics
+        popup_content = f"""<div style='font-family: Arial; font-size: 11px; max-width: 280px;'>
+            <b style='font-size: 13px; color: {color};'>Watershed {ws_data['point_id']}</b><hr style='margin: 5px 0;'>
+            <table style='width: 100%;'>
+            <tr><td><b>Area:</b></td><td>{ws_data['area_km2']:.2f} km²</td></tr>
+            <tr><td><b>Stream Length:</b></td><td>{ws_data.get('stream_length_km', 0):.1f} km</td></tr>
+            <tr><td><b>Drainage Density:</b></td><td>{ws_data.get('drainage_density', 0):.2f} km/km²</td></tr>
+            <tr><td><b>Max Stream Order:</b></td><td>{ws_data.get('max_stream_order', 0)}</td></tr>
+            <tr><td><b>Stream Links:</b></td><td>{ws_data.get('num_stream_links', 0)}</td></tr>
+            <tr><td><b>Mean Slope:</b></td><td>{ws_data.get('mean_slope', 0):.1f}°</td></tr>
+            <tr><td><b>Relief:</b></td><td>{ws_data.get('relief', 0):.0f} m</td></tr>
+            </table>
+        </div>"""
+        
         folium.GeoJson(
             ws_json,
             style_function=lambda x, color=color: {
@@ -1175,14 +1434,46 @@ if st.session_state.get('watershed_polygons') and len(st.session_state.watershed
                 'fillOpacity': 0.3,
                 'opacity': 1.0
             },
-            popup=folium.Popup(
-                f"<b>Watershed {ws_data['point_id']}</b><br>"
-                f"Area: {ws_data['area_km2']:.2f} km²",
-                max_width=200
-            )
+            popup=folium.Popup(popup_content, max_width=300)
         ).add_to(ws_group)
     
     ws_group.add_to(m)
+
+# Add DEM Boundary as vector layer
+if show_dem_boundary and dem_boundary_geom is not None:
+    dem_boundary_group = folium.FeatureGroup(name="📐 DEM Boundary", show=True)
+    
+    # Convert to GeoJSON
+    dem_boundary_json = mapping(dem_boundary_geom)
+    
+    # Style for DEM boundary - dashed orange line, no fill
+    folium.GeoJson(
+        dem_boundary_json,
+        style_function=lambda x: {
+            'fillColor': 'transparent',
+            'color': '#FF6B00',
+            'weight': 3,
+            'fillOpacity': 0,
+            'opacity': 0.9,
+            'dashArray': '10, 5'
+        },
+        tooltip=folium.Tooltip(
+            "<b>DEM Boundary</b><br>Extent of elevation data",
+            sticky=True
+        ),
+        popup=folium.Popup(
+            f"""<div style='font-family: Arial; font-size: 12px;'>
+            <b>📐 DEM Boundary</b><br>
+            <b>West:</b> {bounds_wgs84['min_x']:.4f}°<br>
+            <b>East:</b> {bounds_wgs84['max_x']:.4f}°<br>
+            <b>South:</b> {bounds_wgs84['min_y']:.4f}°<br>
+            <b>North:</b> {bounds_wgs84['max_y']:.4f}°
+            </div>""",
+            max_width=250
+        )
+    ).add_to(dem_boundary_group)
+    
+    dem_boundary_group.add_to(m)
 
 # Add MiniMap
 plugins.MiniMap(toggle_display=True).add_to(m)
@@ -1214,6 +1505,61 @@ if st.session_state.zoom_to_bounds:
 
 # Add Click Handling - Larger map view
 output = st_folium(m, width=None, height=850, use_container_width=True, key="main_map")
+
+# --- EXPORT DEM BOUNDARY ---
+if st.session_state.get('export_dem_boundary', False) and st.session_state.get('dem_boundary') is not None:
+    st.write("---")
+    st.subheader("📥 Export DEM Boundary")
+    
+    dem_boundary = st.session_state['dem_boundary']
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Export as GeoJSON
+        dem_gdf = gpd.GeoDataFrame(
+            {'name': ['DEM Boundary'], 
+             'west': [bounds_wgs84['min_x']],
+             'east': [bounds_wgs84['max_x']],
+             'south': [bounds_wgs84['min_y']],
+             'north': [bounds_wgs84['max_y']]},
+            geometry=[dem_boundary],
+            crs='EPSG:4326'
+        )
+        geojson_str = dem_gdf.to_json()
+        st.download_button(
+            label="📥 Download GeoJSON",
+            data=geojson_str,
+            file_name="dem_boundary.geojson",
+            mime="application/json"
+        )
+    
+    with col2:
+        # Export as Shapefile
+        try:
+            with tempfile.TemporaryDirectory() as tmpdir:
+                shp_path = os.path.join(tmpdir, 'dem_boundary.shp')
+                dem_gdf.to_file(shp_path)
+                
+                zip_path = os.path.join(tmpdir, 'dem_boundary.zip')
+                with zipfile.ZipFile(zip_path, 'w') as zipf:
+                    for file in os.listdir(tmpdir):
+                        if file.startswith('dem_boundary') and not file.endswith('.zip'):
+                            zipf.write(os.path.join(tmpdir, file), file)
+                
+                with open(zip_path, 'rb') as f:
+                    zip_data = f.read()
+                
+                st.download_button(
+                    label="📥 Download Shapefile",
+                    data=zip_data,
+                    file_name="dem_boundary.zip",
+                    mime="application/zip"
+                )
+        except Exception as e:
+            st.error(f"Shapefile export error: {e}")
+    
+    st.session_state.export_dem_boundary = False
 
 # --- 5.5 ATTRIBUTE TABLE VIEWER ---
 if st.session_state.vector_layers:
@@ -1266,12 +1612,51 @@ if st.session_state.vector_layers:
                     selected_col = st.selectbox("Select column for histogram", numeric_cols)
                     if selected_col:
                         import matplotlib.pyplot as plt
-                        fig, ax = plt.subplots(figsize=(10, 4))
-                        gdf[selected_col].hist(ax=ax, bins=20, color='#1e3c72', edgecolor='white')
-                        ax.set_xlabel(selected_col)
-                        ax.set_ylabel('Frequency')
-                        ax.set_title(f'Distribution of {selected_col}')
+                        from matplotlib import cm
+                        import matplotlib.colors as mcolors
+                        
+                        # Set professional style
+                        plt.style.use('seaborn-v0_8-whitegrid')
+                        
+                        fig, ax = plt.subplots(figsize=(12, 5), dpi=100)
+                        
+                        # Create gradient color bins
+                        data = gdf[selected_col].dropna()
+                        n_bins = 25
+                        n, bins, patches = ax.hist(data, bins=n_bins, edgecolor='white', linewidth=0.8)
+                        
+                        # Apply gradient colors to bars
+                        cmap = cm.get_cmap('viridis')
+                        bin_centers = 0.5 * (bins[:-1] + bins[1:])
+                        col = (bin_centers - bin_centers.min()) / (bin_centers.max() - bin_centers.min() + 1e-10)
+                        for c, p in zip(col, patches):
+                            plt.setp(p, 'facecolor', cmap(c))
+                        
+                        # Enhanced styling
+                        ax.set_xlabel(selected_col, fontsize=12, fontweight='bold', color='#333')
+                        ax.set_ylabel('Frequency', fontsize=12, fontweight='bold', color='#333')
+                        ax.set_title(f'Distribution of {selected_col}', fontsize=14, fontweight='bold', color='#1e3c72', pad=15)
+                        
+                        # Add statistics annotation
+                        stats_text = f'Mean: {data.mean():.2f}\nMedian: {data.median():.2f}\nStd: {data.std():.2f}\nN: {len(data)}'
+                        ax.text(0.97, 0.95, stats_text, transform=ax.transAxes, fontsize=10,
+                                verticalalignment='top', horizontalalignment='right',
+                                bbox=dict(boxstyle='round,pad=0.5', facecolor='white', alpha=0.9, edgecolor='#ccc'))
+                        
+                        # Add mean line
+                        ax.axvline(data.mean(), color='#FF5722', linestyle='--', linewidth=2, label=f'Mean: {data.mean():.2f}')
+                        ax.legend(loc='upper left', framealpha=0.9)
+                        
+                        # Grid and spines
+                        ax.grid(True, alpha=0.3, linestyle='-', linewidth=0.5)
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                        ax.spines['left'].set_linewidth(1.5)
+                        ax.spines['bottom'].set_linewidth(1.5)
+                        
+                        plt.tight_layout()
                         st.pyplot(fig)
+                        plt.close(fig)
             else:
                 st.info("No numeric columns available for statistics.")
             
@@ -1489,7 +1874,59 @@ if st.session_state.get('run_batch_analysis', False) and st.session_state.get('s
                     catch_acc_vals = acc[catch]
                     max_acc = float(np.nanmax(catch_acc_vals)) if np.any(catch_acc_vals > 0) else 0
                     
-                    # Store result
+                    # Calculate stream network statistics within watershed
+                    # Stream cells within watershed (using snap_threshold)
+                    catch_arr = np.array(catch)
+                    stream_mask_in_catch = (acc_arr > snap_threshold) & catch_arr
+                    stream_cell_count = np.sum(stream_mask_in_catch)
+                    
+                    # Calculate stream order within watershed
+                    try:
+                        catch_stream_order = grid.stream_order(fdir, stream_mask_in_catch)
+                        catch_stream_order_arr = to_numpy_array(catch_stream_order)
+                        max_stream_order = int(np.nanmax(catch_stream_order_arr)) if np.any(catch_stream_order_arr > 0) else 0
+                        
+                        # Count streams by order
+                        order_counts = {}
+                        for order in range(1, max_stream_order + 1):
+                            order_counts[f'order_{order}_cells'] = int(np.sum(catch_stream_order_arr == order))
+                    except Exception:
+                        max_stream_order = 0
+                        order_counts = {}
+                    
+                    # Calculate stream links within watershed
+                    try:
+                        catch_stream_links = grid.stream_link(fdir, stream_mask_in_catch)
+                        catch_stream_links_arr = to_numpy_array(catch_stream_links)
+                        num_stream_links = int(np.nanmax(catch_stream_links_arr)) if np.any(catch_stream_links_arr > 0) else 0
+                    except Exception:
+                        num_stream_links = 0
+                    
+                    # Calculate drainage density (stream length / watershed area)
+                    # Approximate stream length = stream cells * cell size
+                    try:
+                        cell_size_m = grid.cellsize  # in meters if projected, degrees if geographic
+                        if crs_info and crs_info['is_projected']:
+                            stream_length_km = (stream_cell_count * cell_size_m) / 1000
+                        else:
+                            # Approximate for geographic coords (1 degree ~ 111 km at equator)
+                            avg_lat = (bounds_wgs84['min_y'] + bounds_wgs84['max_y']) / 2
+                            m_per_deg = 111320 * np.cos(np.radians(avg_lat))
+                            stream_length_km = (stream_cell_count * cell_size_m * m_per_deg) / 1000
+                        
+                        drainage_density = stream_length_km / watershed_area_km2 if watershed_area_km2 > 0 else 0
+                    except Exception:
+                        stream_length_km = 0
+                        drainage_density = 0
+                    
+                    # Calculate mean slope within watershed
+                    try:
+                        catch_slope_vals = slope[catch]
+                        mean_slope = float(np.nanmean(np.abs(catch_slope_vals)))
+                    except Exception:
+                        mean_slope = 0
+                    
+                    # Store result with enhanced metrics
                     result = {
                         'point_id': idx,
                         'latitude': pp_lat,
@@ -1499,9 +1936,19 @@ if st.session_state.get('run_batch_analysis', False) and st.session_state.get('s
                         'min_elevation_m': min_elev,
                         'max_elevation_m': max_elev,
                         'mean_elevation_m': mean_elev,
+                        'relief_m': max_elev - min_elev,
+                        'mean_slope_deg': mean_slope,
                         'max_accumulation': max_acc,
+                        'stream_cells': stream_cell_count,
+                        'stream_length_km': stream_length_km,
+                        'drainage_density_km_km2': drainage_density,
+                        'max_stream_order': max_stream_order,
+                        'num_stream_links': num_stream_links,
                         'status': 'Success'
                     }
+                    
+                    # Add stream order counts
+                    result.update(order_counts)
                     
                     # Copy original attributes
                     for col in pp_gdf.columns:
@@ -1514,7 +1961,13 @@ if st.session_state.get('run_batch_analysis', False) and st.session_state.get('s
                         watershed_polygons.append({
                             'point_id': idx,
                             'geometry': watershed_geom_wgs84,
-                            'area_km2': watershed_area_km2
+                            'area_km2': watershed_area_km2,
+                            'stream_length_km': stream_length_km,
+                            'drainage_density': drainage_density,
+                            'max_stream_order': max_stream_order,
+                            'num_stream_links': num_stream_links,
+                            'mean_slope': mean_slope,
+                            'relief': max_elev - min_elev
                         })
                 
             except Exception as e:
@@ -1543,6 +1996,7 @@ if st.session_state.get('run_batch_analysis', False) and st.session_state.get('s
             # Summary statistics
             successful_results = [r for r in results if r['status'] == 'Success']
             if successful_results:
+                st.markdown("#### 📈 Summary Statistics")
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
                     total_area = sum([r['area_km2'] for r in successful_results if r['area_km2']])
@@ -1556,6 +2010,21 @@ if st.session_state.get('run_batch_analysis', False) and st.session_state.get('s
                 with col4:
                     avg_area = np.mean([r['area_km2'] for r in successful_results if r['area_km2']])
                     st.metric("Avg Watershed Area", f"{avg_area:.2f} km²")
+                
+                # Additional stream network metrics
+                col5, col6, col7, col8 = st.columns(4)
+                with col5:
+                    total_stream_length = sum([r.get('stream_length_km', 0) for r in successful_results])
+                    st.metric("Total Stream Length", f"{total_stream_length:.1f} km")
+                with col6:
+                    avg_drainage_density = np.mean([r.get('drainage_density_km_km2', 0) for r in successful_results])
+                    st.metric("Avg Drainage Density", f"{avg_drainage_density:.2f} km/km²")
+                with col7:
+                    max_order = max([r.get('max_stream_order', 0) for r in successful_results])
+                    st.metric("Max Stream Order", f"{max_order}")
+                with col8:
+                    total_links = sum([r.get('num_stream_links', 0) for r in successful_results])
+                    st.metric("Total Stream Links", f"{total_links}")
             
             # Results table
             st.markdown("### 📊 Pour Point Analysis Results")

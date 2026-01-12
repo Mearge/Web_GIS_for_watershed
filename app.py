@@ -132,6 +132,58 @@ if 'pending_crs_layer' not in st.session_state:
     st.session_state.pending_crs_layer = None
 if 'zoom_to_bounds' not in st.session_state:
     st.session_state.zoom_to_bounds = None
+if 'default_layers_loaded' not in st.session_state:
+    st.session_state.default_layers_loaded = False
+
+# --- AUTO-LOAD VECTOR DATA FROM working_files_EPSG_3226 FOLDER ---
+VECTOR_DATA_DIR = os.path.join(BASE_DIR, "working_files_EPSG_3226")
+
+# Define default colors for each layer type
+DEFAULT_LAYER_COLORS = {
+    "Cross_drainage": "#e74c3c",      # Red
+    "Longitudal_Drainages": "#3498db", # Blue
+    "Pourpoints": "#9b59b6",           # Purple
+    "Proposed_landuse": "#2ecc71",     # Green
+    "Rivers": "#1abc9c",               # Teal
+    "Stream_order": "#f39c12"          # Orange
+}
+
+if not st.session_state.default_layers_loaded:
+    if os.path.exists(VECTOR_DATA_DIR):
+        geojson_files = [f for f in os.listdir(VECTOR_DATA_DIR) if f.endswith('.geojson')]
+        for geojson_file in geojson_files:
+            layer_name = os.path.splitext(geojson_file)[0]
+            if layer_name not in st.session_state.vector_layers:
+                try:
+                    file_path = os.path.join(VECTOR_DATA_DIR, geojson_file)
+                    gdf = gpd.read_file(file_path)
+                    
+                    # Store original CRS before reprojecting
+                    original_crs = gdf.crs
+                    
+                    # Reproject to WGS84 if needed
+                    if gdf.crs and str(gdf.crs) != 'EPSG:4326':
+                        gdf = gdf.to_crs('EPSG:4326')
+                    elif gdf.crs is None:
+                        # Assume EPSG:3226 based on folder name
+                        gdf = gdf.set_crs('EPSG:3226')
+                        gdf = gdf.to_crs('EPSG:4326')
+                        original_crs = 'EPSG:3226'
+                    
+                    # Get default color or use blue
+                    layer_color = DEFAULT_LAYER_COLORS.get(layer_name, '#3388ff')
+                    
+                    st.session_state.vector_layers[layer_name] = {
+                        'gdf': gdf,
+                        'original_crs': str(original_crs) if original_crs else 'EPSG:3226',
+                        'visible': True,
+                        'color': layer_color,
+                        'opacity': 0.7,
+                        'weight': 2
+                    }
+                except Exception as e:
+                    st.sidebar.warning(f"⚠️ Could not load {geojson_file}: {e}")
+    st.session_state.default_layers_loaded = True
 
 # Common CRS options for manual assignment
 CRS_OPTIONS = {
